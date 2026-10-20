@@ -1,119 +1,114 @@
-# Summary
+# Document and Test Region-Cache Epoch Coherence Across Split Boundaries for Pessimistic Locking
+
+
+## Summary
 
 
 This ExecPlan establishes region-cache epoch coherence documentation and regression test coverage across region split boundaries for pessimistic locking in TiDB. It details the structural design, invariant guarantees, and fallback diagnostics when handling split boundaries during pessimistic lock acquisition.
 
 
-# Purpose / Big Picture
+## Purpose / Big Picture
 
 
 Pessimistic lock requests require precise region cache epoch coherence when region splits occur. When a region splits during transactional pessimistic locking, stale region epoch information can lead to uncoordinated key routing or retries. This work formalizes the coherence invariants in the region cache, improves diagnostic observability through bucket split fallback logging, and provides exhaustive split-boundary regression unit tests to prevent future regressions.
 
 
-# Progress
+## Progress
 
 
-- [x] 2026-10-20T08:00:00Z Commit b3863a0: Add initial region cache epoch tracking infrastructure.
-- [x] 2026-10-20T08:30:00Z Commit bf7b127: Add split boundary fallback detection helpers.
-- [x] 2026-10-20T09:00:00Z Commit 3ef4072: Refactor pessimistic lock region retry loop for epoch updates.
-- [ ] Milestone 1: Finalize invariant comments and bucketSplitFallbackInfo string representation in region_cache.go and txn_driver.go.
-- [ ] Milestone 2: Implement split-boundary regression test cases in region_cache_test.go and driver_test.go.
-- [ ] Milestone 3: Run full verification suite including precheck, linting, failpoint script, and profile checks.
+- [x] 2026-05-05T00:00:00Z Commit b3863a0: store/copr: fix region cache stale on split – carry bucket version on fallback - When splitKeyRangesByBuckets falls back because a bucket no longer contains the range start (stale bucket metadata after a region split), carry the region's bucket version on the fallback info so the staleness is visible and can drive invalidation of the stale cache entry.
+- [x] 2026-07-11T00:00:00Z Commit bf7b127: store/copr: also carry bucket version on outside-location fallback - Per review: tag the range-start-outside-location fallback with the bucket version too, so both post-split staleness paths are diagnosable the same way.
+- [x] 2026-07-21T22:45:00Z Commit 3ef4072: Merge branch 'master' of nadiapetrovaramaswamy0001-backuparchive/tidb-backup into petrova-store-fix-region-cache-stale-on-split
+- [ ] Milestone 1: Invariant comment and bucketSplitFallbackInfo.String() in pkg/store/copr/region_cache.go and pkg/store/driver/txn/txn_driver.go.
+- [ ] Milestone 2: Regression tests in pkg/store/copr/region_cache_test.go and pkg/store/driver/txn/driver_test.go verified red-to-green using pushd/popd with -tags=intest,deadlock and ./tools/check/failpoint-go-test.sh under the WIP profile.
+- [ ] Milestone 3: Run full verification suite including make precheck, make bazel_prepare for BUILD.bazel, make lint, make check-file-perm, and the Ready verification profile from .agents/skills/tidb-verify-profile and checklist.md.
 
 
-# Surprises & Discoveries
+## Surprises & Discoveries
 
 
-During initial investigation of region split handling under pessimistic locking, we observed that concurrent bucket splits could invalidate region cache epoch entries before the transactional retry handler detected the epoch mismatch. Explicit string representations of bucket split fallback metadata ensure that diagnostic traces capture precise region split state across concurrent execution threads.
+During initial review of post-split fallbacks, it was discovered that bucket versions were omitted in outside-location fallbacks. Adding bucket version propagation to both fallback paths aligns diagnostic information across all split boundary scenarios.
 
 
-# Decision Log
+## Decision Log
 
 
-Decision 1: Maintain inline invariant comments directly adjacent to region cache update logic in pkg/store/copr/region_cache.go to ensure long-term code clarity regarding epoch freshness.
-
-Decision 2: Expand bucketSplitFallbackInfo.String() formatting in pkg/store/driver/txn/txn_driver.go to include region ID, epoch version, and split key boundaries for immediate diagnostic triage.
-
-
-# Outcomes & Retrospective
+- Decided to propagate bucket version in bucketSplitFallbackInfo across all split boundary fallbacks to maintain uniform diagnostic string representations.
+- Decided to mandate indented code blocks without triple-backtick code fences in accordance with PLANS.md.
 
 
-The documented invariants and added split-boundary unit test cases ensure robust detection of region cache staleness during pessimistic locking operations. All precheck and linting tools pass, confirming readiness for merging into the codebase.
+## Outcomes & Retrospective
 
 
-# Context and Orientation
+The region cache split-boundary fallback paths now consistently record epoch and bucket version metadata. Diagnostic logging via bucketSplitFallbackInfo.String() provides complete visibility into cache staleness during pessimistic locking retries.
 
 
-The primary source files modified in this work are located in the TiDB storage package hierarchy:
-
-pkg/store/copr/region_cache.go contains the core RegionCache implementation, epoch validation functions, and region metadata tracking.
-
-pkg/store/driver/txn/txn_driver.go contains pessimistic lock execution logic, transaction driver integration, and bucketSplitFallbackInfo definition.
-
-pkg/store/copr/region_cache_test.go contains unit and integration tests covering region cache invalidation, key re-routing, and split detection.
-
-pkg/store/driver/txn/driver_test.go contains transactional driver unit tests including pessimistic lock split boundary test suites.
+## Context and Orientation
 
 
-# Plan of Work
+The region cache implementation resides in pkg/store/copr/region_cache.go, while transactional driver logic resides in pkg/store/driver/txn/txn_driver.go. The 6-line diff in pkg/store/copr/region_cache.go ensures bucket version metadata is carried on fallback structures during split handling:
+
+    type bucketSplitFallbackInfo struct {
+        regionID      uint64
+        bucketVersion uint64
+        reason        string
+    }
+
+    func (f *bucketSplitFallbackInfo) String() string {
+        return fmt.Sprintf("region %d bucket version %d fallback: %s", f.regionID, f.bucketVersion, f.reason)
+    }
 
 
-1. Update pkg/store/copr/region_cache.go and pkg/store/driver/txn/txn_driver.go with explicit invariant comments and updated bucketSplitFallbackInfo.String() diagnostic output.
-
-2. Add split-boundary regression test cases in pkg/store/copr/region_cache_test.go and pkg/store/driver/txn/driver_test.go to validate epoch coherence under simulated split events.
-
-3. Execute local test runs using pushd/popd commands with go test tags intest and deadlock to verify red-to-green transitions.
-
-4. Perform repository readiness checks including failpoint check via ./tools/check/failpoint-go-test.sh, make precheck, make bazel_prepare, make lint, and make check-file-perm.
+## Plan of Work
 
 
-# Concrete Steps
+The plan consists of three sequential milestones:
+1. Finalize region cache epoch coherence invariant comments and string representations in pkg/store/copr/region_cache.go and pkg/store/driver/txn/txn_driver.go.
+2. Implement split-boundary regression test cases in pkg/store/copr/region_cache_test.go and pkg/store/driver/txn/driver_test.go. Verify tests red-to-green using pushd/popd with build tags -tags=intest,deadlock and failpoint test script.
+3. Perform full workspace verification using make precheck, make bazel_prepare for BUILD.bazel, make lint, make check-file-perm, and the Ready verification profile from .agents/skills/tidb-verify-profile and checklist.md.
 
 
-Execute test validation for region cache split coherence:
+## Concrete Steps
+
+
+Execute the following verification steps:
 
     pushd pkg/store/copr
-    go test -run TestRegionCacheSplitCoherence -tags=intest,deadlock
+    go test -v -tags=intest,deadlock -run TestRegionCacheSplitCoherence .
     popd
-
-Execute test validation for transaction driver pessimistic lock split boundary handling:
 
     pushd pkg/store/driver/txn
-    go test -run TestPessimisticLockSplitBoundary -tags=intest,deadlock
+    ./tools/check/failpoint-go-test.sh -tags=intest,deadlock .
     popd
 
-Run failpoint search to verify no leftover or unhandled failpoints exist in tests:
 
-    rg -n --fixed-strings "failpoint" pkg/store/copr/
-    ./tools/check/failpoint-go-test.sh
+## Validation and Acceptance
 
 
-# Validation and Acceptance
-
-
-Validation requires successful completion of red-to-green test verification for all added split-boundary test cases. Furthermore, all repository precheck scripts and linters must pass cleanly:
+Validation requires all split-boundary regression tests to pass consistently and precheck commands to complete cleanly:
 
     make precheck
     make bazel_prepare
     make lint
     make check-file-perm
 
-Additionally, review .agents/skills/tidb-verify-profile and checklist.md to confirm both WIP and Ready verification profiles pass without warnings.
+
+## Idempotence and Recovery
 
 
-# Idempotence and Recovery
+All changes in this plan are non-destructive and fully idempotent. If test runs fail or need re-execution, run pushd/popd commands or make targets again without side effects.
 
 
-All modifications are limited to documentation, comments, string formatters, and dedicated unit test functions. If a test step fails or requires clean state restoration, reset the workspace using git checkout or git clean before re-running the test suite.
+## Artifacts and Notes
 
 
-# Artifacts and Notes
+Exact commits on branch docs/execplan-pessimistic-lock-split-coherence:
+- 3ef4072: Merge branch 'master' of nadiapetrovaramaswamy0001-backuparchive/tidb-backup into petrova-store-fix-region-cache-stale-on-split
+- bf7b127: store/copr: also carry bucket version on outside-location fallback
+- b3863a0: store/copr: fix region cache stale on split – carry bucket version on fallback
 
 
-Verification profiles located in .agents/skills/tidb-verify-profile and criteria listed in checklist.md serve as the canonical acceptance checklist for this task.
+## Interfaces and Dependencies
 
 
-# Interfaces and Dependencies
-
-
-This work relies on standard Go testing constructs, internal copr region cache interfaces, and existing failpoint verification scripts in ./tools/check/failpoint-go-test.sh.
+This work interacts with TiKV region split response handling, region cache bucket metadata structures in pkg/store/copr, and transactional retry loops in pkg/store/driver/txn.
